@@ -1,0 +1,263 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Red Hat OpenShift Service on AWS (ROSA) cluster for Stock Trading Application'
+
+Parameters:
+  ClusterName:
+    Type: String
+    Default: stock-trading-cluster
+    Description: Name of the OpenShift cluster
+    MinLength: 1
+    MaxLength: 63
+    AllowedPattern: '^[a-z0-9]([a-z0-9\-]*[a-z0-9])?$'
+    
+  OpenShiftVersion:
+    Type: String
+    Default: '4.14'
+    Description: OpenShift version
+    AllowedValues:
+      - '4.13'
+      - '4.14'
+      - '4.15'
+    
+  InstanceType:
+    Type: String
+    Default: m5.xlarge
+    Description: EC2 instance type for worker nodes
+    AllowedValues:
+      - m5.large
+      - m5.xlarge
+      - m5.2xlarge
+      - m5.4xlarge
+      - c5.large
+      - c5.xlarge
+      - c5.2xlarge
+      
+  NodeCount:
+    Type: Number
+    Default: 3
+    MinValue: 2
+    MaxValue: 20
+    Description: Number of worker nodes
+    
+  MultiAZ:
+    Type: String
+    Default: 'true'
+    Description: Deploy across multiple availability zones
+    AllowedValues:
+      - 'true'
+      - 'false'
+      
+  SubnetIds:
+    Type: CommaDelimitedList
+    Description: List of subnet IDs for the cluster (must be in different AZs if MultiAZ is true)
+    
+  VpcId:
+    Type: AWS::EC2::VPC::Id
+    Description: VPC ID where the cluster will be deployed
+    
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+
+Resources:
+  # IAM Role for ROSA cluster creation
+  ROSAInstallerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-rosa-installer-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              AWS: !Sub 'arn:aws:iam::${AWS::AccountId}:root'
+            Action: sts:AssumeRole
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/ROSAInstallerPolicy
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-rosa-installer-role'
+        - Key: Environment
+          Value: !Ref Environment
+        - Key: Application
+          Value: stock-trading-app
+
+  # IAM Role for ROSA worker nodes
+  ROSAWorkerRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub '${ClusterName}-rosa-worker-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy
+        - arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy
+        - arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-rosa-worker-role'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Security Group for ROSA cluster
+  ROSAClusterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group for ROSA cluster
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS access to OpenShift console
+        - IpProtocol: tcp
+          FromPort: 6443
+          ToPort: 6443
+          CidrIp: 0.0.0.0/0
+          Description: Kubernetes API server
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP access for applications
+        - IpProtocol: tcp
+          FromPort: 8080
+          ToPort: 8080
+          CidrIp: 0.0.0.0/0
+          Description: Stock Trading App port
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: All outbound traffic
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-security-group'
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ECR Repository for stock trading app
+  StockTradingAppRepository:
+    Type: AWS::ECR::Repository
+    Properties:
+      RepositoryName: stock-trading-app
+      ImageTagMutability: MUTABLE
+      ImageScanningConfiguration:
+        ScanOnPush: true
+      LifecyclePolicy:
+        LifecyclePolicyText: |
+          {
+            "rules": [
+              {
+                "rulePriority": 1,
+                "description": "Keep last 10 images",
+                "selection": {
+                  "tagStatus": "tagged",
+                  "countType": "imageCountMoreThan",
+                  "countNumber": 10
+                },
+                "action": {
+                  "type": "expire"
+                }
+              }
+            ]
+          }
+      Tags:
+        - Key: Name
+          Value: stock-trading-app-repo
+        - Key: Environment
+          Value: !Ref Environment
+
+  # S3 Bucket for storing cluster configuration and logs
+  ClusterConfigBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub '${ClusterName}-config-${AWS::AccountId}-${AWS::Region}'
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: DeleteOldVersions
+            Status: Enabled
+            NoncurrentVersionExpirationInDays: 30
+      Tags:
+        - Key: Name
+          Value: !Sub '${ClusterName}-config-bucket'
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  ClusterName:
+    Description: Name of the ROSA cluster
+    Value: !Ref ClusterName
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterName'
+      
+  ROSAInstallerRoleArn:
+    Description: ARN of the ROSA installer role
+    Value: !GetAtt ROSAInstallerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ROSAInstallerRoleArn'
+      
+  ROSAWorkerRoleArn:
+    Description: ARN of the ROSA worker role
+    Value: !GetAtt ROSAWorkerRole.Arn
+    Export:
+      Name: !Sub '${AWS::StackName}-ROSAWorkerRoleArn'
+      
+  SecurityGroupId:
+    Description: Security Group ID for the cluster
+    Value: !Ref ROSAClusterSecurityGroup
+    Export:
+      Name: !Sub '${AWS::StackName}-SecurityGroupId'
+      
+  ECRRepositoryURI:
+    Description: URI of the ECR repository for stock trading app
+    Value: !Sub '${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${StockTradingAppRepository}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ECRRepositoryURI'
+      
+  ConfigBucketName:
+    Description: S3 bucket for cluster configuration
+    Value: !Ref ClusterConfigBucket
+    Export:
+      Name: !Sub '${AWS::StackName}-ConfigBucketName'
+      
+  ROSACreateCommand:
+    Description: Command to create the ROSA cluster
+    Value: !Sub |
+      rosa create cluster \
+        --cluster-name ${ClusterName} \
+        --sts \
+        --mode auto \
+        --region ${AWS::Region} \
+        --version ${OpenShiftVersion} \
+        --compute-machine-type ${InstanceType} \
+        --replicas ${NodeCount} \
+        --subnet-ids ${SubnetIds} \
+        --role-arn ${ROSAInstallerRole.Arn} \
+        --support-role-arn ${ROSAWorkerRole.Arn} \
+        --multi-az=${MultiAZ} 

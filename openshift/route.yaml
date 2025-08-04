@@ -1,0 +1,46 @@
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: stock-trading-app-route
+  namespace: stock-trading
+  labels:
+    app: stock-trading-app
+  annotations:
+    haproxy.router.openshift.io/timeout: "60s"
+    haproxy.router.openshift.io/balance: "roundrobin"
+spec:
+  host: stock-trading-app.apps.cluster.local
+  to:
+    kind: Service
+    name: stock-trading-app-service
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+---
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: stock-trading-app-ws-route
+  namespace: stock-trading
+  labels:
+    app: stock-trading-app
+    service: websocket
+  annotations:
+    haproxy.router.openshift.io/timeout: "3600s"
+    haproxy.router.openshift.io/balance: "source"
+spec:
+  host: stock-trading-ws.apps.cluster.local
+  to:
+    kind: Service
+    name: stock-trading-app-ws
+    weight: 100
+  port:
+    targetPort: websocket
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None 

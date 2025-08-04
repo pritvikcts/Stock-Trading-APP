@@ -1,0 +1,283 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'Deploy Stock Trading Application to OpenShift Cluster'
+
+Parameters:
+  ClusterName:
+    Type: String
+    Description: Name of the existing OpenShift cluster
+    
+  OpenShiftConsoleURL:
+    Type: String
+    Description: OpenShift console URL (e.g., https://console-openshift-console.apps.cluster.domain.com)
+    
+  OpenShiftAPIURL:
+    Type: String
+    Description: OpenShift API URL (e.g., https://api.cluster.domain.com:6443)
+    
+  ApplicationImageURI:
+    Type: String
+    Description: URI of the container image for the stock trading application
+    Default: 'stock-trading-app:latest'
+    
+  Environment:
+    Type: String
+    Default: dev
+    Description: Environment name
+    AllowedValues:
+      - dev
+      - staging
+      - prod
+      
+  Replicas:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 10
+    Description: Number of application replicas
+    
+  DomainName:
+    Type: String
+    Description: Domain name for the application routes (e.g., apps.cluster.domain.com)
+    Default: apps.cluster.local
+
+Resources:
+  # Lambda execution role for OpenShift deployment
+  OpenShiftDeploymentRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: OpenShiftDeploymentPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - secretsmanager:GetSecretValue
+                  - secretsmanager:CreateSecret
+                  - secretsmanager:UpdateSecret
+                Resource: '*'
+
+  # Secret for storing OpenShift credentials
+  OpenShiftCredentials:
+    Type: AWS::SecretsManager::Secret
+    Properties:
+      Name: !Sub '${ClusterName}-openshift-credentials'
+      Description: OpenShift cluster credentials for deployment
+      SecretString: !Sub |
+        {
+          "cluster_name": "${ClusterName}",
+          "console_url": "${OpenShiftConsoleURL}",
+          "api_url": "${OpenShiftAPIURL}",
+          "token": "REPLACE_WITH_ACTUAL_TOKEN"
+        }
+
+  # Lambda function for deploying to OpenShift
+  OpenShiftDeploymentFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub '${ClusterName}-openshift-deployer'
+      Runtime: python3.9
+      Handler: index.lambda_handler
+      Role: !GetAtt OpenShiftDeploymentRole.Arn
+      Timeout: 900
+      Environment:
+        Variables:
+          CLUSTER_NAME: !Ref ClusterName
+          SECRET_NAME: !Ref OpenShiftCredentials
+          APP_IMAGE_URI: !Ref ApplicationImageURI
+          REPLICAS: !Ref Replicas
+          DOMAIN_NAME: !Ref DomainName
+          ENVIRONMENT: !Ref Environment
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+          import subprocess
+          import os
+          import base64
+          import tempfile
+          
+          def lambda_handler(event, context):
+              print(f"Deployment event: {json.dumps(event)}")
+              
+              # Get environment variables
+              cluster_name = os.environ['CLUSTER_NAME']
+              secret_name = os.environ['SECRET_NAME']
+              app_image_uri = os.environ['APP_IMAGE_URI']
+              replicas = int(os.environ['REPLICAS'])
+              domain_name = os.environ['DOMAIN_NAME']
+              environment = os.environ['ENVIRONMENT']
+              
+              try:
+                  # Get OpenShift credentials from Secrets Manager
+                  secrets_client = boto3.client('secretsmanager')
+                  secret_response = secrets_client.get_secret_value(SecretId=secret_name)
+                  credentials = json.loads(secret_response['SecretString'])
+                  
+                  # Generate Kubernetes manifests
+                  manifests = generate_manifests(
+                      app_image_uri, replicas, domain_name, environment
+                  )
+                  
+                  return {
+                      'statusCode': 200,
+                      'body': json.dumps({
+                          'message': 'Deployment manifests generated successfully',
+                          'cluster': cluster_name,
+                          'manifests': manifests
+                      })
+                  }
+              
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  return {
+                      'statusCode': 500,
+                      'body': json.dumps({'error': str(e)})
+                  }
+          
+          def generate_manifests(image_uri, replicas, domain_name, environment):
+              """Generate Kubernetes deployment manifests"""
+              
+              namespace_manifest = f"""
+          apiVersion: v1
+          kind: Namespace
+          metadata:
+            name: stock-trading
+            labels:
+              name: stock-trading
+              environment: {environment}
+          """
+              
+              deployment_manifest = f"""
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: stock-trading-app
+            namespace: stock-trading
+          spec:
+            replicas: {replicas}
+            selector:
+              matchLabels:
+                app: stock-trading-app
+            template:
+              metadata:
+                labels:
+                  app: stock-trading-app
+              spec:
+                containers:
+                - name: stock-trading-app
+                  image: {image_uri}
+                  ports:
+                  - containerPort: 8080
+                  resources:
+                    requests:
+                      memory: "512Mi"
+                      cpu: "250m"
+                    limits:
+                      memory: "1Gi"
+                      cpu: "500m"
+          """
+              
+              service_manifest = f"""
+          apiVersion: v1
+          kind: Service
+          metadata:
+            name: stock-trading-app-service
+            namespace: stock-trading
+          spec:
+            selector:
+              app: stock-trading-app
+            ports:
+            - port: 8080
+              targetPort: 8080
+          """
+              
+              route_manifest = f"""
+          apiVersion: route.openshift.io/v1
+          kind: Route
+          metadata:
+            name: stock-trading-app-route
+            namespace: stock-trading
+          spec:
+            host: stock-trading-app.{domain_name}
+            to:
+              kind: Service
+              name: stock-trading-app-service
+            port:
+              targetPort: 8080
+            tls:
+              termination: edge
+          """
+              
+              return {
+                  'namespace': namespace_manifest,
+                  'deployment': deployment_manifest,
+                  'service': service_manifest,
+                  'route': route_manifest
+              }
+
+  # Custom resource for triggering deployment
+  DeploymentTrigger:
+    Type: AWS::CloudFormation::CustomResource
+    Properties:
+      ServiceToken: !GetAtt OpenShiftDeploymentFunction.Arn
+      ClusterName: !Ref ClusterName
+      ImageURI: !Ref ApplicationImageURI
+      Replicas: !Ref Replicas
+      Environment: !Ref Environment
+
+  # CloudWatch Log Group for deployment logs
+  DeploymentLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub '/aws/lambda/${ClusterName}-openshift-deployer'
+      RetentionInDays: 30
+
+Outputs:
+  ClusterName:
+    Description: OpenShift cluster name
+    Value: !Ref ClusterName
+    Export:
+      Name: !Sub '${AWS::StackName}-ClusterName'
+      
+  ApplicationURL:
+    Description: Application URL
+    Value: !Sub 'https://stock-trading-app.${DomainName}'
+    Export:
+      Name: !Sub '${AWS::StackName}-ApplicationURL'
+      
+  WebSocketURL:
+    Description: WebSocket URL for real-time updates
+    Value: !Sub 'wss://stock-trading-app.${DomainName}/ws'
+    Export:
+      Name: !Sub '${AWS::StackName}-WebSocketURL'
+      
+  DeploymentFunctionName:
+    Description: Lambda function for deployment
+    Value: !Ref OpenShiftDeploymentFunction
+    Export:
+      Name: !Sub '${AWS::StackName}-DeploymentFunction'
+      
+  CredentialsSecretName:
+    Description: Secrets Manager secret containing OpenShift credentials
+    Value: !Ref OpenShiftCredentials
+    Export:
+      Name: !Sub '${AWS::StackName}-CredentialsSecret'
+      
+  OpenShiftConsole:
+    Description: OpenShift console URL
+    Value: !Ref OpenShiftConsoleURL
+    Export:
+      Name: !Sub '${AWS::StackName}-OpenShiftConsole' 

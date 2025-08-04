@@ -1,0 +1,45 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: stock-trading
+  labels:
+    name: stock-trading
+    app: stock-trading-app
+  annotations:
+    openshift.io/description: "Stock Trading Application Namespace"
+    openshift.io/display-name: "Stock Trading App"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: stock-trading-config
+  namespace: stock-trading
+  labels:
+    app: stock-trading-app
+data:
+  application-openshift.properties: |
+    # OpenShift specific configuration
+    spring.application.name=Stock Trading App - OpenShift
+    server.port=8080
+    
+    # Database configuration (H2 in-memory for demo)
+    spring.datasource.url=jdbc:h2:mem:stockdb
+    spring.datasource.driverClassName=org.h2.Driver
+    spring.datasource.username=sa
+    spring.datasource.password=password
+    
+    # JPA configuration
+    spring.jpa.database-platform=org.hibernate.dialect.H2Dialect
+    spring.jpa.hibernate.ddl-auto=create-drop
+    spring.jpa.show-sql=false
+    spring.jpa.format-sql=false
+    
+    # Logging configuration for OpenShift
+    logging.level.com.cognizant.vibecoding.stocktrading=INFO
+    logging.level.org.springframework.web.socket=WARN
+    logging.pattern.console=%d{yyyy-MM-dd HH:mm:ss} [%thread] %-5level %logger{36} - %msg%n
+    
+    # Actuator endpoints for OpenShift monitoring
+    management.endpoints.web.exposure.include=health,info,metrics
+    management.endpoint.health.show-details=when-authorized
+    management.health.probes.enabled=true 

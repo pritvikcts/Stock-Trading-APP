@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Stock Trading App - Real-time Prices</title>
+    <script src="https://cdn.jsdelivr.net/npm/sockjs-client@1/dist/sockjs.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/stompjs@2.3.3/lib/stomp.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            text-align: center;
+            color: white;
+            margin-bottom: 30px;
+        }
+
+        .header h1 {
+            font-size: 2.5rem;
+            margin-bottom: 10px;
+        }
+
+        .header p {
+            font-size: 1.1rem;
+            opacity: 0.9;
+        }
+
+        .status {
+            text-align: center;
+            margin-bottom: 20px;
+        }
+
+        .status-indicator {
+            display: inline-block;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-weight: bold;
+            font-size: 0.9rem;
+        }
+
+        .status-connected {
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .status-disconnected {
+            background-color: #f44336;
+            color: white;
+        }
+
+        .controls {
+            display: flex;
+            justify-content: center;
+            gap: 15px;
+            margin-bottom: 30px;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            background-color: #ffffff;
+            color: #333;
+            cursor: pointer;
+            font-weight: bold;
+            transition: all 0.3s ease;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.15);
+        }
+
+        .btn.active {
+            background-color: #4caf50;
+            color: white;
+        }
+
+        .stock-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .stock-card {
+            background: white;
+            border-radius: 12px;
+            padding: 20px;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.1);
+            transition: all 0.3s ease;
+            border-left: 4px solid #ddd;
+        }
+
+        .stock-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 12px 24px rgba(0, 0, 0, 0.15);
+        }
+
+        .stock-card.positive {
+            border-left-color: #4caf50;
+        }
+
+        .stock-card.negative {
+            border-left-color: #f44336;
+        }
+
+        .stock-card.neutral {
+            border-left-color: #ff9800;
+        }
+
+        .stock-symbol {
+            font-size: 1.4rem;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .stock-name {
+            font-size: 0.9rem;
+            color: #666;
+            margin-bottom: 15px;
+        }
+
+        .stock-price {
+            font-size: 1.8rem;
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 10px;
+        }
+
+        .stock-change {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 15px;
+        }
+
+        .change-amount {
+            font-weight: bold;
+        }
+
+        .change-positive {
+            color: #4caf50;
+        }
+
+        .change-negative {
+            color: #f44336;
+        }
+
+        .change-neutral {
+            color: #ff9800;
+        }
+
+        .stock-details {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+            font-size: 0.85rem;
+            color: #666;
+        }
+
+        .detail-item {
+            display: flex;
+            justify-content: space-between;
+        }
+
+        .last-updated {
+            text-align: center;
+            color: #666;
+            font-size: 0.8rem;
+            margin-top: 10px;
+        }
+
+        .loading {
+            text-align: center;
+            color: white;
+            font-size: 1.2rem;
+            margin: 50px 0;
+        }
+
+        .error {
+            background-color: #f44336;
+            color: white;
+            padding: 15px;
+            border-radius: 8px;
+            text-align: center;
+            margin: 20px 0;
+        }
+
+        @media (max-width: 768px) {
+            .stock-grid {
+                grid-template-columns: 1fr;
+            }
+            
+            .header h1 {
+                font-size: 2rem;
+            }
+            
+            .controls {
+                flex-direction: column;
+                align-items: center;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>📈 Stock Trading App</h1>
+            <p>Real-time Stock Prices & Market Data</p>
+        </div>
+
+        <div class="status">
+            <span id="status-indicator" class="status-indicator status-disconnected">Disconnected</span>
+        </div>
+
+        <div class="controls">
+            <button class="btn active" onclick="showAllStocks()">All Stocks</button>
+            <button class="btn" onclick="showTopGainers()">Top Gainers</button>
+            <button class="btn" onclick="showTopLosers()">Top Losers</button>
+            <button class="btn" onclick="refreshData()">Refresh</button>
+        </div>
+
+        <div id="loading" class="loading">Loading stock data...</div>
+        <div id="error" class="error" style="display: none;"></div>
+        <div id="stock-grid" class="stock-grid"></div>
+    </div>
+
+    <script>
+        let stompClient = null;
+        let currentView = 'all';
+
+        // Initialize the application
+        document.addEventListener('DOMContentLoaded', function() {
+            connectWebSocket();
+            loadStockData();
+        });
+
+        // WebSocket connection
+        function connectWebSocket() {
+            const socket = new SockJS('/ws');
+            stompClient = Stomp.over(socket);
+            
+            stompClient.connect({}, function(frame) {
+                console.log('Connected: ' + frame);
+                updateStatus(true);
+                
+                // Subscribe to real-time stock updates
+                stompClient.subscribe('/topic/stock-updates', function(message) {
+                    const stock = JSON.parse(message.body);
+                    updateStockCard(stock);
+                });
+            }, function(error) {
+                console.log('WebSocket connection error: ' + error);
+                updateStatus(false);
+                // Try to reconnect after 5 seconds
+                setTimeout(connectWebSocket, 5000);
+            });
+        }
+
+        function updateStatus(connected) {
+            const indicator = document.getElementById('status-indicator');
+            if (connected) {
+                indicator.textContent = 'Connected - Live Updates';
+                indicator.className = 'status-indicator status-connected';
+            } else {
+                indicator.textContent = 'Disconnected - Attempting to reconnect...';
+                indicator.className = 'status-indicator status-disconnected';
+            }
+        }
+
+        // Load stock data
+        async function loadStockData() {
+            try {
+                document.getElementById('loading').style.display = 'block';
+                document.getElementById('error').style.display = 'none';
+                
+                let url = '/api/stocks';
+                if (currentView === 'gainers') url = '/api/stocks/gainers';
+                else if (currentView === 'losers') url = '/api/stocks/losers';
+                
+                const response = await fetch(url);
+                if (!response.ok) throw new Error('Failed to fetch stock data');
+                
+                const stocks = await response.json();
+                displayStocks(stocks);
+                
+                document.getElementById('loading').style.display = 'none';
+            } catch (error) {
+                console.error('Error loading stock data:', error);
+                document.getElementById('loading').style.display = 'none';
+                showError('Failed to load stock data. Please try again.');
+            }
+        }
+
+        function displayStocks(stocks) {
+            const grid = document.getElementById('stock-grid');
+            grid.innerHTML = '';
+            
+            stocks.forEach(stock => {
+                const card = createStockCard(stock);
+                grid.appendChild(card);
+            });
+        }
+
+        function createStockCard(stock) {
+            const card = document.createElement('div');
+            card.className = 'stock-card';
+            card.id = `stock-${stock.symbol}`;
+            
+            const changeClass = getChangeClass(stock.changePercentage);
+            card.classList.add(changeClass);
+            
+            const changeSymbol = stock.changePercentage > 0 ? '↗' : 
+                                stock.changePercentage < 0 ? '↘' : '→';
+            
+            card.innerHTML = `
+                <div class="stock-symbol">${stock.symbol}</div>
+                <div class="stock-name">${stock.companyName}</div>
+                <div class="stock-price">$${stock.currentPrice.toFixed(2)}</div>
+                <div class="stock-change">
+                    <span class="change-amount change-${changeClass}">
+                        ${changeSymbol} $${Math.abs(stock.changeAmount || 0).toFixed(2)} 
+                        (${stock.changePercentage > 0 ? '+' : ''}${(stock.changePercentage || 0).toFixed(2)}%)
+                    </span>
+                </div>
+                <div class="stock-details">
+                    <div class="detail-item">
+                        <span>Day High:</span>
+                        <span>$${(stock.dayHigh || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span>Day Low:</span>
+                        <span>$${(stock.dayLow || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span>Previous Close:</span>
+                        <span>$${(stock.previousClose || 0).toFixed(2)}</span>
+                    </div>
+                    <div class="detail-item">
+                        <span>Volume:</span>
+                        <span>${(stock.volume || 0).toLocaleString()}</span>
+                    </div>
+                </div>
+                <div class="last-updated">
+                    Last updated: ${new Date(stock.lastUpdated).toLocaleTimeString()}
+                </div>
+            `;
+            
+            return card;
+        }
+
+        function updateStockCard(stock) {
+            const existingCard = document.getElementById(`stock-${stock.symbol}`);
+            if (existingCard) {
+                const newCard = createStockCard(stock);
+                existingCard.replaceWith(newCard);
+                
+                // Add a subtle animation to highlight the update
+                newCard.style.transform = 'scale(1.02)';
+                setTimeout(() => {
+                    newCard.style.transform = 'scale(1)';
+                }, 200);
+            }
+        }
+
+        function getChangeClass(changePercentage) {
+            if (changePercentage > 0) return 'positive';
+            if (changePercentage < 0) return 'negative';
+            return 'neutral';
+        }
+
+        function showError(message) {
+            const errorDiv = document.getElementById('error');
+            errorDiv.textContent = message;
+            errorDiv.style.display = 'block';
+        }
+
+        // Button handlers
+        function showAllStocks() {
+            currentView = 'all';
+            updateActiveButton(0);
+            loadStockData();
+        }
+
+        function showTopGainers() {
+            currentView = 'gainers';
+            updateActiveButton(1);
+            loadStockData();
+        }
+
+        function showTopLosers() {
+            currentView = 'losers';
+            updateActiveButton(2);
+            loadStockData();
+        }
+
+        function refreshData() {
+            loadStockData();
+        }
+
+        function updateActiveButton(index) {
+            const buttons = document.querySelectorAll('.btn');
+            buttons.forEach((btn, i) => {
+                if (i === index) {
+                    btn.classList.add('active');
+                } else {
+                    btn.classList.remove('active');
+                }
+            });
+        }
+    </script>
+</body>
+</html> 
